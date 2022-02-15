@@ -1,0 +1,1 @@
+anie: bash startup.sh
