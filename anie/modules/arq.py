@@ -5,7 +5,7 @@ from Python_ARQ import ARQ
 from pyrogram.types import Message
 
 from anie import CMD_HELP
-from anie.core.main_cmd import anie_on_cmd, e_or_r
+from anie.core.main_cmd import anie_on_cmd
 from anie.core.anie_database.anie_db_conf import set_arq_key, get_arq_key
 from anie.helpers.pyrogram_help import get_arg
 from config import Config
