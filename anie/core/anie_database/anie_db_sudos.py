@@ -1,6 +1,6 @@
 from . import anie_mongodb
 
-al
+
 anie_sudos = anie_mongodb["sudos_db"]
 
 # ========== Databse for sudo users ========== #
