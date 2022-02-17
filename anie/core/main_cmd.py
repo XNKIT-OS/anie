@@ -25,7 +25,7 @@ SUDO_IDS = sudos
 def add_handler(x_wrapper, anie_filter):
     ANIE.add_handler(MessageHandler(x_wrapper, filters=anie_filter), group=0)
 
-
+ 
 async def e_or_r(anie_message, msg_text, parse_mode="md", disable_web_page_preview=True):
     message = anie_message
     if not message:
