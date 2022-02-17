@@ -1,0 +1,204 @@
+import asyncio
+import sys
+import os
+import requests
+import heroku3
+
+from os import environ, execle, path, remove
+from git import Repo
+from git.exc import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
+
+from anie import ANIE, CMD_HELP
+from config import Config
+from anie.helpers.pyrogram_help import get_arg
+from anie.core.main_cmd import anie_on_cmd, e_or_r
+
+
+# Help
+CMD_HELP.update(
+    {
+        "updater": """
+**Updater**
+   `update` - To Updater Your Userbot
+   `restart` - To Restart Your Userbot (Heroku Only)
+   `logs` - To Get Logs of Your Userbot (Heroku Only)
+"""
+    }
+)
+
+mod_file = os.path.basename(__file__)
+
+UPSTREAM_REPO_URL = "https://github.com/xnkit/AniE"
+requirements_path = path.join(
+    path.dirname(path.dirname(path.dirname(__file__))), "requirements.txt"
+)
+
+
+async def gen_chlog(repo, diff):
+    ch_log = ""
+    d_form = "On %d/%m/%y at %H:%M:%S"
+    for c in repo.iter_commits(f"HEAD..upstream/{diff}", max_count=10):
+        ch_log += f"**#{c.count()}** : {c.committed_datetime.strftime(d_form)} : [{c.summary}]({UPSTREAM_REPO_URL.rstrip('/')}/commit/{c}) by `{c.author}`\n"
+    return ch_log
+
+
+async def updateme_requirements():
+    reqs = str(requirements_path)
+    try:
+        process = await asyncio.create_subprocess_shell(
+            " ".join([sys.executable, "-m", "pip", "install", "-r", reqs]),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await process.communicate()
+        return process.returncode
+    except Exception as e:
+        return repr(e)
+
+
+@anie_on_cmd(command="update", modlue=mod_file)
+async def upstream(client, message):
+    status = await e_or_r(anie_message=message, msg_text=f"`Checking For Updates from` [AniE]({UPSTREAM_REPO_URL})")
+    conf = get_arg(message)
+    off_repo = UPSTREAM_REPO_URL
+    txt = "`Oops! Updater Can't Continue...`"
+    txt += "\n\n**LOGTRACE:**\n"
+    try:
+        repo = Repo(search_parent_directories=True)
+    except InvalidGitRepositoryError as error:
+        if conf != "now":
+            pass
+        repo = Repo.init()
+        origin = repo.create_remote("upstream", off_repo)
+        origin.fetch()
+        repo.create_head("ankit", origin.refs.ankit)
+        repo.heads.ankit.set_tracking_branch(origin.refs.ankit)
+        repo.heads.ankit.checkout(True)
+    ac_br = repo.active_branch.name
+    if ac_br != "ankit":
+        await status.edit(f"""
+`❌ Can't update your AniE becuase you're using a custom branch. ❌`
+            
+**Default Branch:** ankit`
+**You are on:** `{ac_br}`
+`Please change to ankit branch.`"""
+        )
+        return repo.__del__()
+    try:
+        repo.create_remote("upstream", off_repo)
+    except BaseException:
+        pass
+    ups_rem = repo.remote("upstream")
+    ups_rem.fetch(ac_br)
+    if "now" not in conf:
+        changelog = await gen_chlog(repo, diff=ac_br)
+        if changelog:
+            req_ver = requests.get("https://raw.githubusercontent.com/xnkit/Anie/ankit/cache/anie_data.json")
+            changelog_str = f"""
+**New Updates are available for AniE**
+`Branch:` [{ac_br}]({UPSTREAM_REPO_URL}/tree/{ac_br})
+**Next Version:** `{req_ver.json()["version"]}`
+**Change** \n\n{changelog}"""
+            if len(changelog_str) > 4096:
+                await status.edit("`Changelog is too big, sending it as a file!`")
+                file = open("ANIE_git_commit_log.txt", "w+")
+                file.write(changelog_str)
+                file.close()
+                await ANIE.send_document(
+                    message.chat.id,
+                    "ANIE_git_commit_log.txt",
+                    caption=f"Do `{Config.CMD_PREFIX}update now` to update your AniE",
+                    reply_to_message_id=status.message_id,
+                )
+                remove("ANIE_git_commit_log.txt")
+            else:
+                return await status.edit(
+                    f"{changelog_str}\n\nDo `.update now` to update your AniE",
+                    disable_web_page_preview=True,
+                )
+        else:
+            await status.edit(
+                f"**✨ AniE is Up-to-date** \n\n**Branch:** [{ac_br}]({UPSTREAM_REPO_URL}/tree/{ac_br})\n",
+                disable_web_page_preview=True,
+            )
+            repo.__del__()
+        return
+    if Config.HEROKU_API_KEY is not None:
+        heroku = heroku3.from_key(Config.HEROKU_API_KEY)
+        heroku_app = None
+        heroku_applications = heroku.apps()
+        if not Config.HEROKU_APP_NAME:
+            await status.edit("**Error:** `Please add HEROKU_APP_NAME variable to continue update!`")
+            return repo.__del__()
+        for app in heroku_applications:
+            if app.name == Config.HEROKU_APP_NAME:
+                heroku_app = app
+                break
+        if heroku_app is None:
+            await status.edit(f"{txt}\n`Invalid Heroku Vars!`")
+            return repo.__del__()
+        await status.edit(
+            "`Userbot Dyno Build is in Progress!`"
+        )
+        ups_rem.fetch(ac_br)
+        repo.git.reset("--hard", "FETCH_HEAD")
+        heroku_git_url = heroku_app.git_url.replace(
+            "https://", "https://api:" + Config.HEROKU_API_KEY + "@"
+        )
+        if "heroku" in repo.remotes:
+            remote = repo.remote("heroku")
+            remote.set_url(heroku_git_url)
+        else:
+            remote = repo.create_remote("heroku", heroku_git_url)
+        try:
+            remote.push(refspec=f"HEAD:refs/heads/{ac_br}", force=True)
+        except GitCommandError as error:
+            pass
+        await status.edit("`Successfully Updated!` \n**Restarting Now...**")
+    else:
+        try:
+            ups_rem.pull(ac_br)
+        except GitCommandError:
+            repo.git.reset("--hard", "FETCH_HEAD")
+        await updateme_requirements()
+        await status.edit("`🎉 Successfully Updated!` \n**Restarting Now...**",)
+        args = [sys.executable, "-m" "anie"]
+        execle(sys.executable, *args, environ)
+        return
+
+# Userbot restart module
+async def restart_altruz():
+    if Config.HEROKU_API_KEY is not None:
+        heroku_conn = heroku3.from_key(Config.HEROKU_API_KEY)
+        server = heroku_conn.app(Config.HEROKU_APP_NAME)
+        server.restart()
+    else:
+        args = [sys.executable, "-m" "anie"]
+        execle(sys.executable, *args, environ)
+        exit()
+
+@anie_on_cmd(command="restart", modlue=mod_file)
+async def restart(client, message):
+    restart_msg = await e_or_r(anie_message=message, msg_text="`Processing...`")
+    await restart_msg.edit("`AniE is restarting! Please wait...`")
+    try:
+        await restart_altruz()
+    except Exception as e:
+        await restart_msg.edit(f"**Error:** `{e}`")
+
+
+@anie_on_cmd(command="logs", modlue=mod_file)
+async def log(client, message):
+    try:
+        await e_or_r(anie_message=message, msg_text="`Getting Logs`")
+        heroku_conn = heroku3.from_key(Config.HEROKU_API_KEY)
+        server = heroku_conn.get_app_log(Config.HEROKU_APP_NAME, dyno='worker', lines=100, source='app', timeout=100)
+        f_logs = server
+        if len(f_logs) > 4096:
+            file = open("logs.txt", "w+")
+            file.write(f_logs)
+            file.close()
+            await ANIE.send_document(message.chat.id, "logs.txt", caption=f"Logs of `{Config.HEROKU_APP_NAME}`")
+            remove("logs.txt")
+    except Exception as e:
+        await message.edit(f"**Error:** `{e}`")
